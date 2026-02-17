@@ -19,8 +19,11 @@ MVP codebase for an SPX 0DTE butterfly trading engine with shared logic across b
   - `ml-build`
   - `ml-train`
   - `ml-optimize-risk`
-- `paper-trade`
-  - defaults to simulated broker in MVP scaffold (`--ib-live` placeholder exists but adapter is not implemented yet)
+  - `paper-trade`
+    - defaults to simulated broker
+    - supports IB broker routing via `--ib-live` (requires `ib-insync`)
+    - supports IB market data provider via `paper-trade --provider ib`
+    - supports ThetaData snapshot cache via `--theta-chain-dir`
 
 ## Project layout
 
@@ -39,6 +42,29 @@ source .venv/bin/activate
 pip install '.[dev]'
 spx-engine backtest --start 2025-02-10 --end 2025-02-14
 ```
+
+## Live hooks
+
+- IB broker routing (paper/live):
+
+```bash
+source .venv/bin/activate
+pip install ib-insync
+spx-engine paper-trade \
+  --date 2025-02-10 \
+  --ib-live \
+  --provider ib \
+  --ib-host 127.0.0.1 \
+  --ib-port 7497 \
+  --ib-client-id 17
+```
+
+- ThetaData chain snapshot cache (CSV or parquet):
+  - Directory layout supported:
+    - `/path/to/chains/2025-02-10/*.csv`
+    - `/path/to/chains/*20250210*.csv`
+  - Required columns: `strike,right,bid,ask`
+  - Optional columns: `mid,iv,delta,gamma,theta,vega,volume,expiry`
 
 ## Data notes
 

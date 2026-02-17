@@ -22,6 +22,9 @@ ml = [
   "scikit-learn>=1.4",
   "optuna>=3.6"
 ]
+live = [
+  "ib-insync>=0.9"
+]
 dev = [
   "pytest>=8.0"
 ]

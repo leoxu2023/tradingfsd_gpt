@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .contracts import FillResult, OrderIntent, Position
@@ -127,28 +129,207 @@ class SimBrokerAdapter(BrokerAdapter):
 
 @dataclass
 class IBBrokerAdapter(BrokerAdapter):
-    """Placeholder for IB paper adapter; implement using ib_insync in production."""
+    """IB paper/live combo-order adapter using ib_insync."""
+
+    host: str = "127.0.0.1"
+    port: int = 7497
+    client_id: int = 7
+    account: str = ""
+    symbol: str = "SPX"
+    exchange: str = "SMART"
+    currency: str = "USD"
+    trading_class: str = "SPXW"
+    enable_order_routing: bool = True
+
+    _ib: Any = field(default=None, init=False)
+    _ib_mod: Any = field(default=None, init=False)
+    _orders: dict[str, Any] = field(default_factory=dict, init=False)
+    _contracts: dict[str, Any] = field(default_factory=dict, init=False)
+    _sim_fallback: SimBrokerAdapter = field(default_factory=SimBrokerAdapter, init=False)
 
     def connect(self) -> None:
-        raise NotImplementedError("IBBrokerAdapter.connect is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            self._sim_fallback.connect()
+            return
+
+        if self._ib is not None:
+            return
+
+        try:
+            import ib_insync as ib_mod
+        except Exception as exc:
+            raise RuntimeError("ib_insync is required for IBBrokerAdapter. Install with: pip install ib-insync") from exc
+
+        ib = ib_mod.IB()
+        ib.connect(self.host, self.port, clientId=self.client_id)
+        self._ib = ib
+        self._ib_mod = ib_mod
 
     def disconnect(self) -> None:
-        raise NotImplementedError("IBBrokerAdapter.disconnect is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            self._sim_fallback.disconnect()
+            return
+
+        if self._ib is None:
+            return
+        self._ib.disconnect()
+        self._ib = None
+        self._ib_mod = None
+
+    def _ensure_connected(self) -> None:
+        if not self.enable_order_routing:
+            return
+        if self._ib is None:
+            self.connect()
 
     def place_combo_limit(self, order_intent: OrderIntent) -> str:
-        raise NotImplementedError("IBBrokerAdapter.place_combo_limit is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            return self._sim_fallback.place_combo_limit(order_intent)
+
+        self._ensure_connected()
+        bag = self._build_combo_contract(order_intent)
+
+        action = "BUY" if order_intent.side.lower() == "buy" else "SELL"
+        order = self._ib_mod.LimitOrder(action, totalQuantity=1, lmtPrice=float(order_intent.limit_price), tif=order_intent.tif)
+        if self.account:
+            order.account = self.account
+
+        trade = self._ib.placeOrder(bag, order)
+        self._ib.sleep(0.1)
+
+        order_id = f"ib-{trade.order.orderId}"
+        self._orders[order_id] = trade
+        self._contracts[order_id] = bag
+        return order_id
 
     def modify_order(self, order_id: str, new_limit: float) -> None:
-        raise NotImplementedError("IBBrokerAdapter.modify_order is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            self._sim_fallback.modify_order(order_id, new_limit)
+            return
+
+        self._ensure_connected()
+        trade = self._orders.get(order_id)
+        contract = self._contracts.get(order_id)
+        if trade is None or contract is None:
+            return
+
+        trade.order.lmtPrice = float(new_limit)
+        self._ib.placeOrder(contract, trade.order)
 
     def cancel_order(self, order_id: str) -> None:
-        raise NotImplementedError("IBBrokerAdapter.cancel_order is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            self._sim_fallback.cancel_order(order_id)
+            return
+
+        self._ensure_connected()
+        trade = self._orders.get(order_id)
+        if trade is None:
+            return
+        self._ib.cancelOrder(trade.order)
 
     def get_fill(self, order_id: str) -> FillResult | None:
-        raise NotImplementedError("IBBrokerAdapter.get_fill is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            return self._sim_fallback.get_fill(order_id)
+
+        self._ensure_connected()
+        trade = self._orders.get(order_id)
+        if trade is None:
+            return None
+
+        status = str(getattr(trade.orderStatus, "status", "")).strip()
+        if status in {"Submitted", "PreSubmitted", "PendingSubmit", "PendingCancel"}:
+            return None
+
+        if status in {"Cancelled", "ApiCancelled", "Inactive"}:
+            return FillResult(
+                order_id=order_id,
+                ts=datetime.now(tz=NY_TZ),
+                avg_price=0.0,
+                filled_qty=0,
+                status="CANCELLED",
+                fees=0.0,
+                slippage_est=0.0,
+            )
+
+        if status == "Filled":
+            filled_qty = int(round(float(getattr(trade.orderStatus, "filled", 0) or 0)))
+            avg_price = float(getattr(trade.orderStatus, "avgFillPrice", 0.0) or 0.0)
+            if avg_price <= 0:
+                avg_price = float(getattr(trade.order, "lmtPrice", 0.0) or 0.0)
+
+            fees = 0.0
+            for fill in getattr(trade, "fills", []):
+                commission_report = getattr(fill, "commissionReport", None)
+                if commission_report is None:
+                    continue
+                commission = getattr(commission_report, "commission", None)
+                if commission is None or (isinstance(commission, float) and math.isnan(commission)):
+                    continue
+                fees += float(commission)
+
+            side = "buy" if str(getattr(trade.order, "action", "BUY")).upper() == "BUY" else "sell"
+            limit_price = float(getattr(trade.order, "lmtPrice", avg_price))
+            slippage = max(0.0, avg_price - limit_price) if side == "buy" else max(0.0, limit_price - avg_price)
+
+            return FillResult(
+                order_id=order_id,
+                ts=datetime.now(tz=NY_TZ),
+                avg_price=avg_price,
+                filled_qty=max(1, filled_qty),
+                status="FILLED",
+                fees=fees,
+                slippage_est=float(slippage),
+            )
+
+        return None
 
     def get_positions(self) -> list[Position]:
-        raise NotImplementedError("IBBrokerAdapter.get_positions is not implemented in MVP scaffold")
+        # Mapping raw IB positions back to FlySpec requires persistent order/position mapping.
+        return []
 
     def get_account_snapshot(self) -> dict:
-        raise NotImplementedError("IBBrokerAdapter.get_account_snapshot is not implemented in MVP scaffold")
+        if not self.enable_order_routing:
+            return self._sim_fallback.get_account_snapshot()
+
+        self._ensure_connected()
+        summary_rows = self._ib.accountSummary(account=self.account or None)
+        snapshot = {"timestamp": datetime.now(tz=NY_TZ).isoformat()}
+        wanted = {"NetLiquidation", "CashBalance", "AvailableFunds", "ExcessLiquidity"}
+        for row in summary_rows:
+            tag = getattr(row, "tag", "")
+            if tag in wanted:
+                snapshot[tag] = getattr(row, "value", "")
+        return snapshot
+
+    def _build_combo_contract(self, order_intent: OrderIntent) -> Any:
+        expiry = order_intent.ts.astimezone(NY_TZ).strftime("%Y%m%d") if order_intent.ts.tzinfo else order_intent.ts.strftime("%Y%m%d")
+        combo_side = order_intent.side.lower()
+
+        qualified_legs = []
+        for strike, right, ratio, leg_side in order_intent.legs:
+            opt = self._ib_mod.Option(
+                symbol=self.symbol,
+                lastTradeDateOrContractMonth=expiry,
+                strike=float(strike),
+                right=str(right).upper()[0],
+                exchange=self.exchange,
+                currency=self.currency,
+                tradingClass=self.trading_class,
+                multiplier="100",
+            )
+            contracts = self._ib.qualifyContracts(opt)
+            if not contracts:
+                raise RuntimeError(f"Could not qualify IB option contract for {self.symbol} {expiry} {strike}{right}")
+            qc = contracts[0]
+
+            effective_leg_side = str(leg_side).lower()
+            if combo_side == "sell":
+                effective_leg_side = "buy" if effective_leg_side == "sell" else "sell"
+
+            action = "BUY" if effective_leg_side == "buy" else "SELL"
+            combo_leg = self._ib_mod.ComboLeg(conId=qc.conId, ratio=int(ratio), action=action, exchange=self.exchange)
+            qualified_legs.append(combo_leg)
+
+        bag = self._ib_mod.Bag(symbol=self.symbol, secType="BAG", currency=self.currency, exchange=self.exchange)
+        bag.comboLegs = qualified_legs
+        return bag

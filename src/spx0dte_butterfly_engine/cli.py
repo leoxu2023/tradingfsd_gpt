@@ -20,7 +20,7 @@ from .ml.optimize import RiskParamOptimizer
 from .ml.train import ModelTrainer
 from .policy import ModelPolicy
 from .pricing import OptionPricer
-from .provider import LocalProvider
+from .provider import ChainSnapshotStore, IBProvider, LocalProvider
 from .regime import RegimeEngine
 from .registry import ModelRegistry
 from .risk import RiskManager
@@ -33,7 +33,7 @@ def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def _build_stack(data_dir: Path, runtime_dir: Path):
+def _build_stack(data_dir: Path, runtime_dir: Path, theta_chain_dir: Path | None = None):
     calendar = SessionCalendar()
     ingestor = DataIngestor()
     feature_engine = FeatureEngine()
@@ -43,7 +43,7 @@ def _build_stack(data_dir: Path, runtime_dir: Path):
     risk_mgr = RiskManager(cfg=RiskConfig())
     exec_mgr = ExecutionManager()
 
-    provider = LocalProvider(data_dir=data_dir, ingestor=ingestor, calendar=calendar)
+    provider = LocalProvider(data_dir=data_dir, ingestor=ingestor, calendar=calendar, theta_chain_dir=theta_chain_dir)
     datastore = DataStore(root=runtime_dir / "store")
 
     simulator = Simulator(
@@ -70,7 +70,7 @@ def _build_stack(data_dir: Path, runtime_dir: Path):
 
 
 def cmd_backtest(args) -> int:
-    stack = _build_stack(args.data_dir, args.runtime_dir)
+    stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     broker = SimBrokerAdapter()
     engine = BacktestEngine(simulator=stack["simulator"], data_provider=stack["provider"], exec_sim=broker)
 
@@ -95,7 +95,7 @@ def cmd_backtest(args) -> int:
 
 
 def cmd_ml_build(args) -> int:
-    stack = _build_stack(args.data_dir, args.runtime_dir)
+    stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     policy_cfg = PolicyConfig(
         model_version=args.policy_version,
         abstain_thresholds={"min_score": 0.05, "min_margin": 0.01},
@@ -155,7 +155,7 @@ def cmd_ml_train(args) -> int:
 
 
 def cmd_ml_optimize_risk(args) -> int:
-    stack = _build_stack(args.data_dir, args.runtime_dir)
+    stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     broker = SimBrokerAdapter()
     engine = BacktestEngine(simulator=stack["simulator"], data_provider=stack["provider"], exec_sim=broker)
     optimizer = RiskParamOptimizer(backtest_engine=engine, policy_version=args.policy_version, date_range=(args.start, args.end))
@@ -180,7 +180,7 @@ def cmd_ml_optimize_risk(args) -> int:
 
 
 def cmd_paper_trade(args) -> int:
-    stack = _build_stack(args.data_dir, args.runtime_dir)
+    stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     registry = ModelRegistry(root=args.runtime_dir / "registry")
 
     policy = ModelPolicy.load(args.policy_version)
@@ -189,10 +189,42 @@ def cmd_paper_trade(args) -> int:
     else:
         risk_cfg = RiskConfig()
 
-    broker = IBBrokerAdapter() if args.ib_live else SimBrokerAdapter()
+    data_provider = stack["provider"]
+    provider_name = "local"
+    if args.provider == "ib":
+        chain_store = (
+            ChainSnapshotStore(args.theta_chain_dir, max_staleness_min=args.chain_max_staleness_min)
+            if args.theta_chain_dir
+            else None
+        )
+        data_provider = IBProvider(
+            host=args.ib_host,
+            port=args.ib_port,
+            client_id=args.ib_client_id,
+            symbol=args.ib_symbol,
+            exchange=args.ib_spot_exchange,
+            chain_store=chain_store,
+            fallback_provider=stack["provider"],
+        )
+        provider_name = "ib"
+
+    broker = (
+        IBBrokerAdapter(
+            host=args.ib_host,
+            port=args.ib_port,
+            client_id=args.ib_client_id,
+            account=args.ib_account,
+            symbol=args.ib_symbol,
+            exchange=args.ib_order_exchange,
+            trading_class=args.ib_trading_class,
+            enable_order_routing=True,
+        )
+        if args.ib_live
+        else SimBrokerAdapter()
+    )
     orchestrator = LiveOrchestrator(
         calendar=stack["calendar"],
-        data_provider=stack["provider"],
+        data_provider=data_provider,
         feature_engine=stack["feature_engine"],
         regime_engine=stack["regime_engine"],
         candidate_gen=stack["candidate_gen"],
@@ -203,8 +235,12 @@ def cmd_paper_trade(args) -> int:
         event_sink=stack["datastore"],
     )
 
-    summary = orchestrator.run_paper(args.session_date, policy_version=policy, risk_cfg_version=risk_cfg)
-    print(json.dumps({"mode": "paper-trade", **summary}, indent=2))
+    try:
+        summary = orchestrator.run_paper(args.session_date, policy_version=policy, risk_cfg_version=risk_cfg)
+    finally:
+        if isinstance(data_provider, IBProvider):
+            data_provider.disconnect()
+    print(json.dumps({"mode": "paper-trade", "provider": provider_name, "broker": "ib" if args.ib_live else "sim", **summary}, indent=2))
     return 0
 
 
@@ -212,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="spx-engine", description="SPX 0DTE butterfly engine")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--runtime-dir", type=Path, default=Path("runtime"))
+    parser.add_argument("--theta-chain-dir", type=Path, default=None, help="Optional ThetaData snapshot directory.")
 
     sub = parser.add_subparsers(dest="mode", required=True)
 
@@ -245,7 +282,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_paper.add_argument("--date", dest="session_date", type=_parse_date, default=date.today())
     p_paper.add_argument("--policy-version", default="heuristic-v1")
     p_paper.add_argument("--risk-version", default="")
-    p_paper.add_argument("--ib-live", action="store_true", help="Use IB broker adapter (not implemented in scaffold).")
+    p_paper.add_argument("--provider", choices=["local", "ib"], default="local", help="Market data provider for paper loop.")
+    p_paper.add_argument("--ib-live", action="store_true", help="Route combo orders through IB using ib_insync.")
+    p_paper.add_argument("--ib-host", default="127.0.0.1")
+    p_paper.add_argument("--ib-port", type=int, default=7497)
+    p_paper.add_argument("--ib-client-id", type=int, default=17)
+    p_paper.add_argument("--ib-account", default="")
+    p_paper.add_argument("--ib-symbol", default="SPX")
+    p_paper.add_argument("--ib-spot-exchange", default="CBOE")
+    p_paper.add_argument("--ib-order-exchange", default="SMART")
+    p_paper.add_argument("--ib-trading-class", default="SPXW")
+    p_paper.add_argument("--chain-max-staleness-min", type=int, default=5)
     p_paper.set_defaults(func=cmd_paper_trade)
 
     return parser
