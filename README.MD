@@ -60,11 +60,34 @@ spx-engine paper-trade \
 ```
 
 - ThetaData chain snapshot cache (CSV or parquet):
+  - use options root `SPXW` for 0DTE chain pulls
   - Directory layout supported:
     - `/path/to/chains/2025-02-10/*.csv`
     - `/path/to/chains/*20250210*.csv`
   - Required columns: `strike,right,bid,ask`
   - Optional columns: `mid,iv,delta,gamma,theta,vega,volume,expiry`
+
+- Collect ThetaData snapshots (default root = `SPXW`) for this engine:
+
+```bash
+source .venv/bin/activate
+python3 scripts/fetch_thetadata_option_snapshots.py \
+  --date 20260217 \
+  --root SPXW \
+  --start 10:00 \
+  --end 14:00 \
+  --out-dir data/thetadata/chains
+```
+
+- Run paper mode using collected snapshots:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python3 -m spx0dte_butterfly_engine.cli paper-trade \
+  --date 2026-02-17 \
+  --theta-chain-dir data/thetadata/chains \
+  --provider local
+```
 
 ## Data notes
 

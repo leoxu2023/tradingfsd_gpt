@@ -33,6 +33,7 @@ class ChainSnapshotStoreTests(unittest.TestCase):
             self.assertEqual(snap.quality_flags.get("source"), "theta_cache")
             self.assertIn("mid", snap.rows_df.columns)
             self.assertEqual(len(snap.rows_df), 2)
+            self.assertAlmostEqual(float(snap.rows_df.iloc[0]["strike"]), 6000.0)
 
     def test_returns_none_if_too_stale(self):
         with tempfile.TemporaryDirectory() as td:
@@ -48,6 +49,35 @@ class ChainSnapshotStoreTests(unittest.TestCase):
             snap = store.load(ts)
 
             self.assertIsNone(snap)
+
+    def test_scales_thetadata_strike_and_maps_expiration(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            day_dir = root / "2026-02-17"
+            day_dir.mkdir(parents=True, exist_ok=True)
+
+            snap_path = day_dir / "20260217_100000.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "root": "SPXW",
+                        "expiration": 20260217,
+                        "strike": 6000000,
+                        "right": "C",
+                        "bid": 1.2,
+                        "ask": 1.4,
+                    }
+                ]
+            ).to_csv(snap_path, index=False)
+
+            ts = datetime(2026, 2, 17, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+            store = ChainSnapshotStore(root=root, max_staleness_min=5)
+            snap = store.load(ts)
+
+            self.assertIsNotNone(snap)
+            assert snap is not None
+            self.assertEqual(float(snap.rows_df.iloc[0]["strike"]), 6000.0)
+            self.assertEqual(snap.expiry.isoformat(), "2026-02-17")
 
 
 if __name__ == "__main__":

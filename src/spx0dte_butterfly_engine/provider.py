@@ -114,6 +114,7 @@ class ChainSnapshotStore:
             "option_type": "right",
             "type": "right",
             "underlying_price": "underlying",
+            "expiration": "expiry",
         }
         df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
@@ -125,6 +126,12 @@ class ChainSnapshotStore:
         for col in ["strike", "bid", "ask", "mid", "iv", "delta", "gamma", "theta", "vega", "volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # ThetaData option strikes are commonly scaled by 1000 (e.g. 6000000 -> 6000.0).
+        if "strike" in df.columns and not df["strike"].dropna().empty:
+            strike_med = float(df["strike"].dropna().median())
+            if strike_med > 100000:
+                df["strike"] = df["strike"] / 1000.0
 
         df["right"] = df["right"].astype(str).str.upper().str[0]
         if "mid" not in df.columns:
@@ -140,7 +147,12 @@ class ChainSnapshotStore:
         expiry = ts.date()
         if "expiry" in df.columns and len(df):
             try:
-                expiry = pd.to_datetime(df["expiry"]).dt.date.iloc[0]
+                raw_exp = str(df["expiry"].iloc[0]).strip()
+                m = re.search(r"\b(\d{8})\b", raw_exp)
+                if m:
+                    expiry = datetime.strptime(m.group(1), "%Y%m%d").date()
+                else:
+                    expiry = pd.to_datetime(df["expiry"]).dt.date.iloc[0]
             except Exception:
                 expiry = ts.date()
 
