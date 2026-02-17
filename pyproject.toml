@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spx0dte-butterfly-engine"
+version = "0.1.0"
+description = "Intraday paper-trading engine for SPX 0DTE butterflies"
+readme = "README.MD"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+  {name = "TradingFSD"}
+]
+dependencies = [
+  "pandas>=2.1",
+  "numpy>=1.26"
+]
+
+[project.optional-dependencies]
+ml = [
+  "scikit-learn>=1.4",
+  "optuna>=3.6"
+]
+dev = [
+  "pytest>=8.0"
+]
+
+[project.scripts]
+spx-engine = "spx0dte_butterfly_engine.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"
