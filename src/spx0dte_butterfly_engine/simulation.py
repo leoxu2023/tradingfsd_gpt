@@ -118,7 +118,7 @@ class Simulator:
             intent: TradeIntent | None = policy.select(
                 scored_rows,
                 risk_state,
-                thresholds={"min_score": -0.2, "min_margin": 0.0, "max_qty": 1},
+                thresholds={"max_qty": 1},
             )
             if not intent:
                 continue

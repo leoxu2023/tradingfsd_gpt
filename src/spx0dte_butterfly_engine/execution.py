@@ -14,13 +14,21 @@ class ExecutionManager:
     poll_step_sec: int = 15
 
     def build_entry_order(self, trade_intent: TradeIntent, fly_quote: FlyQuote) -> OrderIntent:
+        mode = str(trade_intent.entry_mode).lower()
+        if mode == "aggressive":
+            # Start closer to ask for higher-conviction entries.
+            start_limit = float(fly_quote.mid + 0.35 * max(0.0, fly_quote.ask - fly_quote.mid))
+            urgency = "normal"
+        else:
+            start_limit = float(fly_quote.mid)
+            urgency = "low"
         return OrderIntent(
             ts=trade_intent.ts,
             legs=trade_intent.fly_spec.legs,
-            limit_price=float(fly_quote.mid),
+            limit_price=start_limit,
             tif="DAY",
             deadline=trade_intent.ts + timedelta(seconds=self.entry_timeout_sec),
-            urgency="low",
+            urgency=urgency,
             side="buy",
         )
 

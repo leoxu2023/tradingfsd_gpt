@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import math
 
 from .contracts import FillResult, Position, RiskConfig, RiskState, TradeIntent
 
@@ -51,7 +52,11 @@ class RiskManager:
             if pos.state != "OPEN":
                 continue
             mark = float(marks.get(pos.position_id, pos.entry_fill.avg_price))
+            if not math.isfinite(mark):
+                mark = float(pos.entry_fill.avg_price)
             pnl = (mark - pos.entry_fill.avg_price) * pos.qty * 100.0
+            if not math.isfinite(pnl):
+                pnl = 0.0
             pos.current_unrealized = pnl
             pos.peak_unrealized = max(pos.peak_unrealized, pnl)
             if pos.peak_unrealized > 0:
@@ -80,8 +85,11 @@ class RiskManager:
 
     def on_exit(self, ts: datetime, position: Position, fill: FillResult, risk_state: RiskState) -> RiskState:
         realized_trade = (fill.avg_price - position.entry_fill.avg_price) * position.qty * 100.0
+        if not math.isfinite(realized_trade):
+            realized_trade = 0.0
         risk_state.realized += realized_trade
-        risk_state.unrealized -= position.current_unrealized
+        unrealized_leg = position.current_unrealized if math.isfinite(position.current_unrealized) else 0.0
+        risk_state.unrealized -= unrealized_leg
 
         if realized_trade < 0:
             risk_state.loss_streak += 1

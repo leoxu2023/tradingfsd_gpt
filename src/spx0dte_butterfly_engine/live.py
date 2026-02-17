@@ -113,7 +113,7 @@ class LiveOrchestrator:
             score = self._policy.score_candidates([feat])[0]
             scored.append({"fly_spec": spec, "fly_quote": quote, "score": score})
 
-        intent = self._policy.select(scored, self._risk_state, {"min_score": -0.2, "min_margin": 0.0, "max_qty": 1})
+        intent = self._policy.select(scored, self._risk_state, {"max_qty": 1})
         if not intent:
             return
 

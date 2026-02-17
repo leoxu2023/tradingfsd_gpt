@@ -19,9 +19,9 @@ class FeatureEngine:
         vix1d = aligned.vix1d_df[["ts", "close"]].rename(columns={"close": "vix1d_close"})
 
         df = spx.merge(vix, on="ts", how="left").merge(vix1d, on="ts", how="left")
-        df["ret_1m"] = df["spx_close"].pct_change()
-        df["ret_5m"] = df["spx_close"].pct_change(5)
-        df["ret_15m"] = df["spx_close"].pct_change(15)
+        df["ret_1m"] = df["spx_close"].pct_change(fill_method=None)
+        df["ret_5m"] = df["spx_close"].pct_change(5, fill_method=None)
+        df["ret_15m"] = df["spx_close"].pct_change(15, fill_method=None)
         df["rv_15"] = df["ret_1m"].rolling(15).std() * np.sqrt(390)
         df["range_frac"] = (df["spx_high"] - df["spx_low"]) / df["spx_close"].replace(0, np.nan)
         df["vix_term"] = df["vix1d_close"] - df["vix_close"]

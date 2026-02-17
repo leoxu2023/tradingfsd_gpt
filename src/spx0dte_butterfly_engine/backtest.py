@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from .contracts import BacktestReport, RiskConfig
@@ -13,9 +14,11 @@ class BacktestEngine:
     simulator: Any
     data_provider: Any
     exec_sim: Any
+    model_dir: Path = Path("runtime/models")
+    registry_dir: Path = Path("runtime/registry")
 
     def run(self, date_range: tuple[date, date], policy_version: str, risk_cfg_version) -> BacktestReport:
-        policy = ModelPolicy.load(policy_version)
+        policy = ModelPolicy.load(policy_version, model_dir=self.model_dir, registry_dir=self.registry_dir)
         risk_cfg = risk_cfg_version if isinstance(risk_cfg_version, RiskConfig) else RiskConfig()
 
         day_results = []

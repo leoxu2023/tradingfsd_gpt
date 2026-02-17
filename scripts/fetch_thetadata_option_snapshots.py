@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", required=True, help="Trade date YYYYMMDD")
     parser.add_argument("--expiry", default="", help="Expiration YYYYMMDD (default: same as --date)")
     parser.add_argument("--start", default="10:00", help="Start time HH:MM ET")
-    parser.add_argument("--end", default="14:00", help="End time HH:MM ET")
+    parser.add_argument("--end", default="16:00", help="End time HH:MM ET")
     parser.add_argument("--step-min", type=int, default=1, help="Minute step between requests")
     parser.add_argument("--out-dir", type=Path, default=Path("data/thetadata/chains"))
     parser.add_argument("--verbose", action="store_true")

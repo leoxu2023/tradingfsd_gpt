@@ -191,6 +191,13 @@ class LocalProvider(MarketDataProvider):
         if self.theta_chain_dir is not None:
             self._chain_store = ChainSnapshotStore(self.theta_chain_dir, self.chain_max_staleness_min)
 
+    @staticmethod
+    def _retime_to_session_date(df: pd.DataFrame, session_date: date) -> pd.DataFrame:
+        out = df.copy()
+        ts = pd.to_datetime(out["ts"]).dt.tz_convert("America/New_York")
+        out["ts"] = pd.to_datetime(ts.dt.strftime(f"{session_date.isoformat()} %H:%M:%S")).dt.tz_localize("America/New_York")
+        return out
+
     def _load_symbol(self, symbol: str) -> pd.DataFrame:
         if symbol in self._raw_cache:
             return self._raw_cache[symbol]
@@ -213,6 +220,7 @@ class LocalProvider(MarketDataProvider):
                 # Fallback for bootstrap mode: use latest available day.
                 latest_date = pd.to_datetime(df["ts"]).dt.date.max()
                 day_df = df[pd.to_datetime(df["ts"]).dt.date == latest_date].copy()
+                day_df = self._retime_to_session_date(day_df, session_date)
             sliced[symbol] = day_df
 
         aligned = self.ingestor.align_series(sliced, session)
@@ -226,7 +234,14 @@ class LocalProvider(MarketDataProvider):
         row = spx[spx["ts"] <= ts].tail(1)
         if row.empty:
             row = spx.head(1)
-        return float(row.iloc[0]["close"])
+        close_val = float(row.iloc[0]["close"])
+        if math.isnan(close_val):
+            valid = spx.dropna(subset=["close"])
+            if not valid.empty:
+                close_val = float(valid.iloc[-1]["close"])
+        if math.isnan(close_val):
+            raise RuntimeError(f"Spot unavailable for {ts.isoformat()} from local bars")
+        return close_val
 
     def get_chain_snapshot(self, ts: datetime) -> ChainSnapshot:
         cached = self._chain_store.load(ts) if self._chain_store is not None else None

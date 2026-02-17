@@ -72,7 +72,13 @@ def _build_stack(data_dir: Path, runtime_dir: Path, theta_chain_dir: Path | None
 def cmd_backtest(args) -> int:
     stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     broker = SimBrokerAdapter()
-    engine = BacktestEngine(simulator=stack["simulator"], data_provider=stack["provider"], exec_sim=broker)
+    engine = BacktestEngine(
+        simulator=stack["simulator"],
+        data_provider=stack["provider"],
+        exec_sim=broker,
+        model_dir=args.runtime_dir / "models",
+        registry_dir=args.runtime_dir / "registry",
+    )
 
     risk_cfg = RiskConfig()
     report = engine.run((args.start, args.end), policy_version=args.policy_version, risk_cfg_version=risk_cfg)
@@ -117,7 +123,13 @@ def cmd_ml_build(args) -> int:
     )
 
     candidate_path = builder.build_candidates((args.start, args.end), policy_cfg, stack["provider"])
-    labeled_path = builder.label_candidates(candidate_path, simulator=stack["simulator"], risk_cfg=RiskConfig())
+    labeled_path = builder.label_candidates(
+        candidate_path,
+        simulator=stack["simulator"],
+        risk_cfg=RiskConfig(),
+        data_provider=stack["provider"],
+        hold_minutes=args.label_horizon_min,
+    )
 
     print(json.dumps({"mode": "ml-build", "candidates": str(candidate_path), "labeled": str(labeled_path)}, indent=2))
     return 0
@@ -143,7 +155,14 @@ def cmd_ml_train(args) -> int:
         valid_df = train_df.tail(max(1, len(train_df) // 5)).copy()
 
     trainer = ModelTrainer(model_dir=args.runtime_dir / "models")
-    artifacts = trainer.train_ranker(train_df, valid_df, params={"version": args.version})
+    artifacts = trainer.train_ranker(
+        train_df,
+        valid_df,
+        params={
+            "version": args.version,
+            "target_trade_rate": args.target_trade_rate,
+        },
+    )
 
     registry = ModelRegistry(root=args.runtime_dir / "registry")
     registry.save_model(artifacts)
@@ -157,7 +176,13 @@ def cmd_ml_train(args) -> int:
 def cmd_ml_optimize_risk(args) -> int:
     stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     broker = SimBrokerAdapter()
-    engine = BacktestEngine(simulator=stack["simulator"], data_provider=stack["provider"], exec_sim=broker)
+    engine = BacktestEngine(
+        simulator=stack["simulator"],
+        data_provider=stack["provider"],
+        exec_sim=broker,
+        model_dir=args.runtime_dir / "models",
+        registry_dir=args.runtime_dir / "registry",
+    )
     optimizer = RiskParamOptimizer(backtest_engine=engine, policy_version=args.policy_version, date_range=(args.start, args.end))
     best_cfg, report = optimizer.optimize(args.trials)
 
@@ -183,7 +208,17 @@ def cmd_paper_trade(args) -> int:
     stack = _build_stack(args.data_dir, args.runtime_dir, args.theta_chain_dir)
     registry = ModelRegistry(root=args.runtime_dir / "registry")
 
-    policy = ModelPolicy.load(args.policy_version)
+    policy_version = args.policy_version
+    if policy_version in {"current", "latest"}:
+        current_path = args.runtime_dir / "registry" / "models" / "current_model.txt"
+        if current_path.exists():
+            policy_version = current_path.read_text(encoding="utf-8").strip() or policy_version
+
+    policy = ModelPolicy.load(
+        policy_version,
+        model_dir=args.runtime_dir / "models",
+        registry_dir=args.runtime_dir / "registry",
+    )
     if args.risk_version:
         risk_cfg = registry.load_risk_config(args.risk_version)
     else:
@@ -253,24 +288,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="mode", required=True)
 
     p_backtest = sub.add_parser("backtest")
+    p_backtest.add_argument("--theta-chain-dir", type=Path, default=None, help="Optional ThetaData snapshot directory.")
     p_backtest.add_argument("--start", type=_parse_date, required=True)
     p_backtest.add_argument("--end", type=_parse_date, required=True)
     p_backtest.add_argument("--policy-version", default="heuristic-v1")
     p_backtest.set_defaults(func=cmd_backtest)
 
     p_ml_build = sub.add_parser("ml-build")
+    p_ml_build.add_argument("--theta-chain-dir", type=Path, default=None, help="Optional ThetaData snapshot directory.")
     p_ml_build.add_argument("--start", type=_parse_date, required=True)
     p_ml_build.add_argument("--end", type=_parse_date, required=True)
     p_ml_build.add_argument("--policy-version", default="heuristic-v1")
+    p_ml_build.add_argument("--label-horizon-min", type=int, default=30, help="Forward holding horizon used for labels.")
     p_ml_build.set_defaults(func=cmd_ml_build)
 
     p_ml_train = sub.add_parser("ml-train")
     p_ml_train.add_argument("--dataset", required=True)
     p_ml_train.add_argument("--version", default=f"ranker-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
+    p_ml_train.add_argument("--target-trade-rate", type=float, default=0.25, help="Target fraction of timestamps to take entries.")
     p_ml_train.add_argument("--promote", action="store_true")
     p_ml_train.set_defaults(func=cmd_ml_train)
 
     p_ml_opt = sub.add_parser("ml-optimize-risk")
+    p_ml_opt.add_argument("--theta-chain-dir", type=Path, default=None, help="Optional ThetaData snapshot directory.")
     p_ml_opt.add_argument("--start", type=_parse_date, required=True)
     p_ml_opt.add_argument("--end", type=_parse_date, required=True)
     p_ml_opt.add_argument("--policy-version", default="heuristic-v1")
@@ -279,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ml_opt.set_defaults(func=cmd_ml_optimize_risk)
 
     p_paper = sub.add_parser("paper-trade")
+    p_paper.add_argument("--theta-chain-dir", type=Path, default=None, help="Optional ThetaData snapshot directory.")
     p_paper.add_argument("--date", dest="session_date", type=_parse_date, default=date.today())
     p_paper.add_argument("--policy-version", default="heuristic-v1")
     p_paper.add_argument("--risk-version", default="")

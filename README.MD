@@ -6,6 +6,7 @@ MVP codebase for an SPX 0DTE butterfly trading engine with shared logic across b
 
 - Strategy: SPX 0DTE butterflies only
 - Entry window: 10:00-14:00 ET (auto-shortened on half-days)
+  - new entries only in this window; open positions may continue after 14:00 until exit logic or close flatten
 - Risk controls:
   - Combo-level caps
   - Account daily stop (`realized + unrealized <= -1300`)
@@ -75,7 +76,7 @@ python3 scripts/fetch_thetadata_option_snapshots.py \
   --date 20260217 \
   --root SPXW \
   --start 10:00 \
-  --end 14:00 \
+  --end 16:00 \
   --out-dir data/thetadata/chains
 ```
 
@@ -87,6 +88,23 @@ PYTHONPATH=src python3 -m spx0dte_butterfly_engine.cli paper-trade \
   --date 2026-02-17 \
   --theta-chain-dir data/thetadata/chains \
   --provider local
+```
+
+- Build and train the entry-decision model on SPXW snapshots:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python3 -m spx0dte_butterfly_engine.cli ml-build \
+  --start 2026-02-17 \
+  --end 2026-02-17 \
+  --theta-chain-dir data/thetadata/chains \
+  --label-horizon-min 30
+
+PYTHONPATH=src python3 -m spx0dte_butterfly_engine.cli ml-train \
+  --dataset artifacts/datasets/candidates_2026-02-17_2026-02-17_labeled.parquet \
+  --version ranker-spxw-v1 \
+  --target-trade-rate 0.25 \
+  --promote
 ```
 
 ## Data notes

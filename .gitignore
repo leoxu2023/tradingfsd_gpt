@@ -16,6 +16,7 @@ dist/
 # Runtime outputs
 artifacts/
 runtime/
+data/thetadata/
 
 # OS/editor
 .DS_Store
